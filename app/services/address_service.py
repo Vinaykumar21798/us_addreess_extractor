@@ -150,19 +150,45 @@ class AddressService:
     def simulate_smarty_extraction(self, text: str):
         import re
         addresses = []
-        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-        current_pos = 0
-        for idx, p in enumerate(paragraphs):
-            comps = self.parse_unverified_components(p)
-            is_verified = (idx % 3 != 1)
-            start_pos = text.find(p, current_pos)
-            if start_pos == -1:
-                start_pos = current_pos
-            end_pos = start_pos + len(p)
-            current_pos = end_pos + 2
+        
+        # State abbreviations list to verify simulated addresses
+        state_abbrs = r'(?:AL|AK|AS|AZ|AR|CA|CO|CT|DE|DC|FM|FL|GA|GU|HI|ID|IL|IN|IA|KS|KY|LA|ME|MH|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|MP|OH|OK|OR|PW|PA|PR|RI|SC|SD|TN|TX|UT|VT|VI|VA|WA|WV|WI|WY)'
+        state_zip_re = re.compile(r'\b' + state_abbrs + r'\b\s+\d{5}(?:-\d{4})?\b')
+        
+        # Address block extractor regex (Street/PO Box + optional City + optional State + ZIP)
+        ADDRESS_BLOCK_RE = re.compile(
+            r'(?:'
+            r'(?:\b\d+\s+(?:[A-Za-z0-9\.\s#,]{1,30}\s+)?(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd|Way|Court|Ct|Parkway|Pkwy|Circle|Cir|Trail|Trl|Highway|Hwy|Loop|Plaza|Pl|Terrace|Ter|Square|Sq|Broadway)\b)|'
+            r'(?:\bP\.?\s*O\.?\s*Box\s+\d+\b)'
+            r')'
+            r'(?:[\s,]+[A-Za-z\s\.\-]{2,30})?'  # Optional City
+            r'(?:[\s,]+\b' + state_abbrs + r'\b\s+\d{5}(?:-\d{4})?\b)?',
+            re.IGNORECASE
+        )
+
+        for match in ADDRESS_BLOCK_RE.finditer(text):
+            addr_text = match.group(0).strip()
+            if addr_text.endswith('.'):
+                addr_text = addr_text[:-1].strip()
+            
+            # Require uppercase state abbreviation to keep candidate (prevents lowercase word matches like "in", "or")
+            if not re.search(r'\b' + state_abbrs + r'\b', addr_text):
+                continue
+
+            # Verify only if it has a state and zip code structure to prevent false positives in offer letters
+            is_verified = bool(state_zip_re.search(addr_text))
+            
+            # For simulation fallback, to prevent false positives (like "1000 Square feet"),
+            # we only extract/return if it has a valid State and ZIP code structure.
+            if not is_verified:
+                continue
+
+            comps = self.parse_unverified_components(addr_text)
+            start_pos = match.start()
+            end_pos = match.start() + len(addr_text)
             
             addresses.append({
-                "text": p,
+                "text": addr_text,
                 "verified": is_verified,
                 "start": start_pos,
                 "end": end_pos,
@@ -202,12 +228,10 @@ class AddressService:
         # Step 3: Extract segments
         segments = processor.extract_segments(file)
 
-        # Regex for US Address Detection
+        # Regex for US Address Detection (strictly requiring state+zip or street + suffix keyword)
         US_ADDRESS_RE = re.compile(
-            r'(?:\b\d{5}(?:-\d{4})?\b)|'  # Zip code
-            r'(?:\b(?:AL|AK|AS|AZ|AR|CA|CO|CT|DE|DC|FM|FL|GA|GU|HI|ID|IL|IN|IA|KS|KY|LA|ME|MH|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|MP|OH|OK|OR|PW|PA|PR|RI|SC|SD|TN|TX|UT|VT|VI|VA|WA|WV|WI|WY)\b\s+\d{5})|'  # State + Zip
-            r'(?:\b\d+\s+[A-Za-z0-9\.\s#,]{5,}\b)',  # Street address pattern
-            re.IGNORECASE
+            r'(?:\b(?:AL|AK|AS|AZ|AR|CA|CO|CT|DE|DC|FM|FL|GA|GU|HI|ID|IL|IN|IA|KS|KY|LA|ME|MH|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|MP|OH|OK|OR|PW|PA|PR|RI|SC|SD|TN|TX|UT|VT|VI|VA|WA|WV|WI|WY)\b\s+\d{5}(?:-\d{4})?\b)|'  # State + Zip (uppercase, strict ZIP boundary)
+            r'(?i:\b\d+\s+(?:[A-Za-z0-9\.\s#,]{1,20}\s+)?(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd|Way|Court|Ct|Parkway|Pkwy|Circle|Cir|Trail|Trl|Highway|Hwy|Loop|Plaza|Pl|Terrace|Ter|Square|Sq|Broadway)\b)'  # Street + suffix keyword (case-insensitive)
         )
 
         # Step 4: Filter segments using regex and deduplicate identical text blocks
